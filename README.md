@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="./logo.jpg" alt="Команда Некодеры" width="720">
+  <img src="./image.jpg" alt="Команда Некодеры" width="720">
 
   <h1>Некодеры</h1>
 
