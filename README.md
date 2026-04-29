@@ -6,13 +6,35 @@
     <b>Конструктор аналитических выборок для бюджетного планирования Амурской области</b>
   </p>
 
-  <p>
+  <img
+    src="./image.jpg"
+    alt="Конструктор аналитических выборок"
+    width="560"
+    style="border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 35, 63, 0.22); margin: 8px 0 14px;"
+  >
+
+  <p style="margin-top: 10px;">
     <a href="https://necoders.tech/">
       <img src="https://img.shields.io/badge/Демо-necoders.tech-2f6fed?style=for-the-badge" alt="Демо">
     </a>
     <img src="https://img.shields.io/badge/Frontend-React_19-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React">
     <img src="https://img.shields.io/badge/Backend-Python_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Deploy-Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  </p>
+
+  <p>
+    <img src="https://img.shields.io/badge/CSV-импорт-0f766e?style=flat-square" alt="CSV импорт">
+    <img src="https://img.shields.io/badge/ETL-нормализация-7c3aed?style=flat-square" alt="ETL нормализация">
+    <img src="https://img.shields.io/badge/Dashboard-аналитика-2563eb?style=flat-square" alt="Dashboard аналитика">
+    <img src="https://img.shields.io/badge/XLSX%20%2F%20CSV-экспорт-ea580c?style=flat-square" alt="Экспорт">
+  </p>
+
+  <p>
+    <a href="https://necoders.tech/">Открыть демо</a>
+    ·
+    <a href="https://example.com/screencast">Скринкаст</a>
+    ·
+    <a href="https://example.com/presentation">Презентация</a>
   </p>
 
 </div>
