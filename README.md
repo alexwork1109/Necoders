@@ -147,7 +147,6 @@ flowchart LR
 
 ```text
 newhaka_full/
-├── AImodule/                 # Изолированный адаптер помощника и речевого ввода
 ├── backend/                  # Flask API, доменная логика, миграции, тесты
 │   ├── app/
 │   │   ├── api/v1/           # Регистрация API endpoints
@@ -174,7 +173,6 @@ newhaka_full/
 │       ├── entities/         # API-клиенты, схемы, query hooks
 │       └── shared/           # UI-kit, api client, утилиты
 ├── task/                     # Тестовые обезличенные данные кейса
-├── docs/                     # Архитектура, API, сценарии, деплой
 ├── deploy/                   # Production entrypoint
 ├── Dockerfile                # Единый production-контейнер
 ├── amvera.yaml               # Конфигурация Amvera
