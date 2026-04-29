@@ -33,7 +33,7 @@
     ·
     <a href="https://disk.yandex.ru/i/l3V9591GVSwTWA">Скринкаст</a>
     ·
-    <a href="https://example.com/presentation">Презентация</a>
+    <a href="https://disk.yandex.ru/i/9Fvsk_kOp-kO6g">Презентация</a>
   </p>
 
 </div>
@@ -44,7 +44,7 @@
 
 - **Развернутое решение:** [https://necoders.tech/](https://necoders.tech/)
 - **Скринкаст:** [https://disk.yandex.ru/i/l3V9591GVSwTWA](https://disk.yandex.ru/i/l3V9591GVSwTWA)
-- **Презентация:** [ссылка будет добавлена](https://example.com/presentation)
+- **Презентация:** [https://disk.yandex.ru/i/9Fvsk_kOp-kO6g](https://disk.yandex.ru/i/9Fvsk_kOp-kO6g)
 
 ---
 
