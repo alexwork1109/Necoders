@@ -33,6 +33,8 @@ from app.modules.budget_constructor.services import (
     list_metrics,
     list_templates,
     reload_dataset,
+    reload_dataset_from_uploads,
+    reset_dataset,
 )
 
 bp = Blueprint("analytics", __name__)
@@ -45,18 +47,34 @@ def sources_index():
     return json_response({"items": [SourceResponse(**source.__dict__) for source in dataset.source_files]})
 
 
-@bp.post("/import-demo")
+@bp.post("/import")
 @admin_required
-def import_demo():
-    payload = AnalyticsImportRequest.model_validate(json_payload())
-    dataset = reload_dataset(payload.folder_path)
+def import_create():
+    if request.files:
+        dataset = reload_dataset_from_uploads(request.files.getlist("files"))
+    else:
+        payload = AnalyticsImportRequest.model_validate(json_payload())
+        dataset = reload_dataset(payload.folder_path)
     return json_response(
         {
             "sources": len(dataset.source_files),
             "issues": len(dataset.issues),
-            "message": "Демонстрационные данные импортированы в БД.",
+            "message": "Данные импортированы в БД.",
         }
     )
+
+
+@bp.post("/import-demo")
+@admin_required
+def import_demo():
+    return import_create()
+
+
+@bp.delete("/import")
+@admin_required
+def import_delete():
+    reset_dataset()
+    return json_response({"message": "Импортированные данные удалены из БД."})
 
 
 @bp.get("/import-issues")

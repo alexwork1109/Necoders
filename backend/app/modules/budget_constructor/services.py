@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Iterable
 
 from flask import current_app
+from werkzeug.datastructures import FileStorage
 
 from app.config import REPO_ROOT
 from app.core.errors import ResourceNotFound, ValidationAppError
@@ -19,6 +21,7 @@ from app.modules.budget_constructor.engine import (
 )
 from app.modules.budget_constructor.exporters import query_result_to_csv, query_result_to_xlsx
 from app.modules.budget_constructor.storage import (
+    clear_persisted_dataset,
     has_persisted_dataset,
     load_persisted_dataset,
     replace_persisted_dataset,
@@ -27,12 +30,14 @@ from app.modules.budget_constructor.types import AnalyticsDataset, QueryResult
 
 _DATASET_CACHE: AnalyticsDataset | None = None
 
+EXPECTED_TASK_DIRS = ("1. РЧБ", "2. Соглашения", "3. ГЗ", "4. Выгрузка БУАУ")
+
 
 TEMPLATE_DESCRIPTIONS = {
     "kik": "КЦСР=*****978**. В предоставленных CSV может не быть строк для этого контрольного раздела.",
     "skk": "КЦСР=*****6105*. Сведения по специальным казначейским кредитам.",
     "two_three": "КЦСР=*****970**. Раздел 3 контрольного примера.",
-    "okv": "ОКВ: ДопКР не равен 000 или КВР 400/406/407/408/460-466.",
+    "okv": "ОКВ: ДопКР не равен 0.",
 }
 
 
@@ -61,7 +66,7 @@ def get_dataset(*, reload: bool = False) -> AnalyticsDataset:
         _DATASET_CACHE = load_persisted_dataset()
         return _DATASET_CACHE
 
-    if current_app.config.get("ANALYTICS_AUTO_IMPORT", True):
+    if current_app.config.get("ANALYTICS_AUTO_IMPORT", False):
         return reload_dataset()
 
     _DATASET_CACHE = AnalyticsDataset()
@@ -80,6 +85,51 @@ def reload_dataset(folder_path: str | Path | None = None) -> AnalyticsDataset:
     replace_persisted_dataset(parsed_dataset)
     _DATASET_CACHE = load_persisted_dataset()
     return _DATASET_CACHE
+
+
+def reload_dataset_from_uploads(uploaded_files: Iterable[FileStorage]) -> AnalyticsDataset:
+    files = [file for file in uploaded_files if file.filename]
+    if not files:
+        raise ValidationAppError("Выберите папку с файлами для импорта.")
+
+    with tempfile.TemporaryDirectory(prefix="analytics-upload-") as temp_dir:
+        staging_dir = Path(temp_dir)
+        for file in files:
+            relative_path = _safe_upload_relative_path(file.filename or "")
+            destination = staging_dir / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            file.save(destination)
+
+        task_dir = _find_uploaded_task_root(staging_dir)
+        return reload_dataset(task_dir)
+
+
+def reset_dataset() -> AnalyticsDataset:
+    global _DATASET_CACHE
+    clear_persisted_dataset()
+    _DATASET_CACHE = AnalyticsDataset()
+    return _DATASET_CACHE
+
+
+def _safe_upload_relative_path(filename: str) -> Path:
+    normalized = filename.replace("\\", "/").strip("/")
+    parts = [part for part in PurePosixPath(normalized).parts if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValidationAppError("Имя загруженного файла содержит недопустимый путь.")
+    return Path(*parts)
+
+
+def _find_uploaded_task_root(staging_dir: Path) -> Path:
+    candidates = [staging_dir, *(path for path in staging_dir.rglob("*") if path.is_dir())]
+
+    def score(path: Path) -> int:
+        return sum(1 for directory in EXPECTED_TASK_DIRS if (path / directory).is_dir())
+
+    task_dir = max(candidates, key=score)
+    if score(task_dir) == 0:
+        expected = ", ".join(EXPECTED_TASK_DIRS)
+        raise ValidationAppError(f"Выберите папку с подкаталогами источников: {expected}.")
+    return task_dir
 
 
 def list_metrics() -> list[dict[str, str]]:

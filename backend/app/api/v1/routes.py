@@ -3,6 +3,7 @@ from flask import Blueprint, Flask
 
 def register_api(app: Flask) -> None:
     from app.modules.admin.routes import bp as admin_bp
+    from app.modules.assistant.routes import bp as assistant_bp
     from app.modules.budget_constructor.routes import bp as analytics_bp
     from app.modules.auth.routes import bp as auth_bp
     from app.modules.files.routes import bp as files_bp
@@ -18,5 +19,6 @@ def register_api(app: Flask) -> None:
     api_v1_bp.register_blueprint(users_bp, url_prefix="/users")
     api_v1_bp.register_blueprint(files_bp, url_prefix="/files")
     api_v1_bp.register_blueprint(analytics_bp, url_prefix="/analytics")
+    api_v1_bp.register_blueprint(assistant_bp, url_prefix="/assistant")
     api_v1_bp.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(api_v1_bp)

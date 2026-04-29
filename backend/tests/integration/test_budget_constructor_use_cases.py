@@ -133,6 +133,8 @@ def test_use_case_control_templates_are_executable_and_real_data_is_explicit(dat
         )
         assert result.rows, template_code
         assert sum(result.totals.values(), Decimal("0.00")) > 0
+        if template_code == "okv":
+            assert all(row.codes.get("kdr") and any(char != "0" for char in row.codes["kdr"]) for row in result.rows)
 
     kik_result = query_dataset(
         dataset,

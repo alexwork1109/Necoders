@@ -15,6 +15,26 @@ CSV_COLUMNS = [
     ("warning_codes", "Предупреждения"),
 ]
 
+SOURCE_LABELS = {
+    "rchb": "РЧБ",
+    "agreements": "Соглашения",
+    "gz_budget_lines": "ГЗ: бюджетные строки",
+    "gz_contracts": "ГЗ: договоры и контракты",
+    "gz_payments": "ГЗ: платежи",
+    "buau": "БУАУ",
+}
+
+WARNING_LABELS = {
+    "equal_by_line_no_amount": "Сумма распределена поровну",
+    "contract_amount_allocated_equally": "Сумма распределена поровну",
+    "payment_budget_line_missing": "Платеж без бюджетной строки",
+    "payment_contract_missing": "Платеж без договора",
+    "contract_budget_line_missing": "Договор без бюджетной строки",
+    "missing_columns": "Не хватает колонок",
+    "row_parse_error": "Ошибка разбора строки",
+    "unknown_template": "Неизвестный шаблон",
+}
+
 
 def query_result_to_csv(result: QueryResult) -> str:
     output = StringIO()
@@ -26,8 +46,8 @@ def query_result_to_csv(result: QueryResult) -> str:
                 row.object_name,
                 row.metric_name,
                 f"{row.amount:.2f}",
-                row.source_type,
-                ", ".join(row.warning_codes),
+                _source_label(row.source_type),
+                ", ".join(_warning_label(code) for code in row.warning_codes),
             ]
         )
     return output.getvalue()
@@ -56,8 +76,8 @@ def query_result_to_xlsx(result: QueryResult, path: Path | str) -> Path:
                 row.object_name,
                 row.metric_name,
                 float(row.amount),
-                row.source_type,
-                ", ".join(row.warning_codes),
+                _source_label(row.source_type),
+                ", ".join(_warning_label(code) for code in row.warning_codes),
             ]
         )
 
@@ -70,9 +90,9 @@ def query_result_to_xlsx(result: QueryResult, path: Path | str) -> Path:
 
     if result.warnings:
         issues_ws = wb.create_sheet("Предупреждения")
-        issues_ws.append(["Уровень", "Код", "Сообщение"])
+        issues_ws.append(["Уровень", "Проверка", "Сообщение"])
         for issue in result.warnings:
-            issues_ws.append([issue.severity, issue.code, issue.message])
+            issues_ws.append([_severity_label(issue.severity), _warning_label(issue.code), issue.message])
         for cell in issues_ws[1]:
             cell.font = Font(bold=True)
             cell.fill = header_fill
@@ -82,3 +102,15 @@ def query_result_to_xlsx(result: QueryResult, path: Path | str) -> Path:
 
     wb.save(output_path)
     return output_path
+
+
+def _source_label(value: str) -> str:
+    return SOURCE_LABELS.get(value, value)
+
+
+def _warning_label(value: str) -> str:
+    return WARNING_LABELS.get(value, value)
+
+
+def _severity_label(value: str) -> str:
+    return {"error": "Ошибка", "warning": "Предупреждение"}.get(value, value)

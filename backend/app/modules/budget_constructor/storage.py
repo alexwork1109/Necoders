@@ -30,7 +30,7 @@ def has_persisted_dataset() -> bool:
 
 
 def replace_persisted_dataset(dataset: AnalyticsDataset) -> None:
-    _clear_persisted_dataset()
+    clear_persisted_dataset()
     _persist_sources(dataset)
     _persist_budget_facts(dataset)
     _persist_agreements(dataset)
@@ -38,6 +38,11 @@ def replace_persisted_dataset(dataset: AnalyticsDataset) -> None:
     _persist_contract_budget_lines(dataset)
     _persist_payments(dataset)
     _persist_import_issues(dataset)
+    db.session.commit()
+
+
+def clear_persisted_dataset() -> None:
+    _clear_persisted_dataset()
     db.session.commit()
 
 
@@ -447,4 +452,3 @@ def _decimal(value: Decimal | int | float | str | None) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
-

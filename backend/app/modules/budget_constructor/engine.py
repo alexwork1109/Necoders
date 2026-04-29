@@ -63,8 +63,6 @@ TEMPLATE_LABELS = {
     "okv": "Раздел 4. ОКВ",
 }
 
-OKV_KVR_CODES = {"400", "406", "407", "408", "460", "461", "462", "463", "464", "465", "466"}
-
 RCHB_REQUIRED_COLUMNS = {
     "Бюджет",
     "Дата проводки",
@@ -766,7 +764,7 @@ def _finalize_quality(dataset: AnalyticsDataset) -> None:
             ImportIssue(
                 "warning",
                 "contract_amount_allocated_equally",
-                f"Договор {contract_id} имеет {len(lines)} бюджетных строк без сумм строк, сумма распределена поровну.",
+                f"Договор {contract_id} имеет {len(lines)} {_ru_plural(len(lines), 'бюджетную строку', 'бюджетные строки', 'бюджетных строк')} без сумм строк, сумма распределена поровну.",
             )
         )
 
@@ -928,9 +926,13 @@ def _matches_template(codes: dict[str, str | None], template_code: str | None) -
         return kcsr_slice(kcsr, 6, 3) == "970"
     if template_code == "okv":
         kdr = codes.get("kdr")
-        kvr = codes.get("kvr")
-        return bool(kdr and kdr != "000") or bool(kvr in OKV_KVR_CODES)
+        return _is_nonzero_code(kdr)
     return False
+
+
+def _is_nonzero_code(value: str | None) -> bool:
+    code = normalize_code(value)
+    return bool(code and any(char != "0" for char in code))
 
 
 def _object_identity(dataset: AnalyticsDataset, codes: dict[str, str | None], fallback_name: str | None) -> tuple[str, str]:
@@ -1101,3 +1103,14 @@ def _query_text_variants(query_text: str) -> set[str]:
     if len(query_text) > 2 and query_text.endswith("а"):
         variants.add(f"{query_text[:-1]}ы")
     return variants
+
+
+def _ru_plural(value: int, one: str, few: str, many: str) -> str:
+    value = abs(value)
+    if value % 100 in range(11, 15):
+        return many
+    if value % 10 == 1:
+        return one
+    if value % 10 in range(2, 5):
+        return few
+    return many
