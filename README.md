@@ -8,9 +8,6 @@
 
   <img
     src="./image.jpg"
-    alt="Команда Некодеры"
-    width="500"
-    style="border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 35, 63, 0.18); margin: 8px 0 10px;"
   >
 
   <p>
