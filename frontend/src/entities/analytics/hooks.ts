@@ -2,13 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type AnalyticsImportPayload,
+  clearAnalyticsImport,
   exportAnalytics,
   getAnalyticsDrilldown,
   getAnalyticsIssues,
   getAnalyticsMetrics,
   getAnalyticsSources,
   getAnalyticsTemplates,
-  importDemoAnalytics,
+  importAnalytics,
   runAnalyticsCompare,
   runAnalyticsQuery,
   runAnalyticsTimeline,
@@ -23,10 +24,22 @@ export function useAnalyticsSources() {
   });
 }
 
-export function useImportDemoAnalytics() {
+export function useImportAnalytics() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload?: AnalyticsImportPayload) => importDemoAnalytics(payload),
+    mutationFn: (payload?: AnalyticsImportPayload) => importAnalytics(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: analyticsKeys.all });
+    }
+  });
+}
+
+export const useImportDemoAnalytics = useImportAnalytics;
+
+export function useClearAnalyticsImport() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: clearAnalyticsImport,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: analyticsKeys.all });
     }

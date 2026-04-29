@@ -11,7 +11,7 @@ import { PasswordField } from "../../shared/ui/password-field";
 import { TextField } from "../../shared/ui/text-field";
 
 const loginSchema = z.object({
-  email: z.string().min(1, "Введите почту или имя пользователя."),
+  email: z.string().min(1, "Введите почту или логин."),
   password: z.string().min(1, "Введите пароль.")
 });
 
@@ -36,7 +36,7 @@ export function LoginForm() {
   return (
     <form className="grid gap-4" onSubmit={onSubmit}>
       <TextField
-        label="Почта или имя пользователя"
+        label="Почта или логин"
         type="text"
         autoComplete="username"
         error={form.formState.errors.email?.message}

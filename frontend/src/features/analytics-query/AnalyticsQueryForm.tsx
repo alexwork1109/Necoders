@@ -1,8 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { CalendarDays, Check, ChevronDown, Filter, Search, X } from "lucide-react";
 import type { ComponentProps } from "react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { z } from "zod";
 
 import type { AnalyticsMetric, AnalyticsSearchHit, AnalyticsTemplate } from "../../entities/analytics/analytics.schema";
@@ -19,16 +20,19 @@ import { Skeleton } from "../../shared/ui/skeleton";
 const formSchema = z
   .object({
     mode: z.enum(["search", "template"]),
-    template_code: z.string(),
-    query: z.string(),
+    template_code: z.string().optional().default(""),
+    query: z.string().optional().default(""),
     metrics: z.array(z.string()).min(1, "Выберите хотя бы один показатель."),
     date_mode: z.enum(["range", "compare"]),
-    date_from: z.string(),
-    date_to: z.string(),
-    base_date: z.string(),
-    compare_date: z.string()
+    date_from: z.string().optional().default(""),
+    date_to: z.string().optional().default(""),
+    base_date: z.string().optional().default(""),
+    compare_date: z.string().optional().default("")
   })
   .superRefine((value, ctx) => {
+    if (value.mode === "template" && !value.template_code) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["template_code"], message: "Выберите шаблон." });
+    }
     if (value.date_mode === "range" && (!value.date_from || !value.date_to)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["date_to"], message: "Укажите период." });
     }
@@ -79,10 +83,11 @@ export function AnalyticsQueryForm({
   isPending: boolean;
   onSelectedHitsChange: (items: AnalyticsSearchHit[]) => void;
   searchRequest?: { value: string; nonce: number } | null;
-  onSubmit: (payload: AnalyticsQueryPayload) => void;
+  onSubmit: (payload: AnalyticsQueryPayload) => Promise<void> | void;
 }) {
   const form = useForm<AnalyticsFormValues>({
     resolver: zodResolver(formSchema),
+    shouldUnregister: false,
     defaultValues: {
       mode: "template",
       template_code: "skk",
@@ -97,32 +102,41 @@ export function AnalyticsQueryForm({
   });
 
   const mode = form.watch("mode");
-  const query = form.watch("query");
+  const query = form.watch("query") ?? "";
   const dateMode = form.watch("date_mode");
   const selectedMetrics = form.watch("metrics");
   const debouncedQuery = useDebouncedValue(query, 250);
   const search = useAnalyticsSearch(mode === "search" ? debouncedQuery : "");
   const searchItems = search.data?.items ?? [];
+  const syncedTemplateCodeRef = useRef<string | undefined>(undefined);
+  const handledSearchRequestNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (mode === "template" && selectedHits.length) {
       onSelectedHitsChange([]);
     }
-  }, [mode, onSelectedHitsChange, selectedHits.length]);
+    form.clearErrors(mode === "template" ? "query" : "template_code");
+  }, [form, mode, onSelectedHitsChange, selectedHits.length]);
 
   useEffect(() => {
-    if (!activeTemplateCode) return;
-    if (form.getValues("template_code") === activeTemplateCode && form.getValues("mode") === "template") return;
+    if (!activeTemplateCode) {
+      syncedTemplateCodeRef.current = undefined;
+      return;
+    }
+    if (syncedTemplateCodeRef.current === activeTemplateCode) return;
+    syncedTemplateCodeRef.current = activeTemplateCode;
     form.setValue("mode", "template");
     form.setValue("template_code", activeTemplateCode);
   }, [activeTemplateCode, form]);
 
   useEffect(() => {
     if (!searchRequest) return;
+    if (handledSearchRequestNonceRef.current === searchRequest.nonce) return;
+    handledSearchRequestNonceRef.current = searchRequest.nonce;
     form.setValue("mode", "search");
     form.setValue("query", searchRequest.value, { shouldValidate: true });
     onSelectedHitsChange([]);
-  }, [form, onSelectedHitsChange, searchRequest?.nonce]);
+  }, [form, onSelectedHitsChange, searchRequest]);
 
   function toggleMetric(metricCode: string) {
     const current = form.getValues("metrics");
@@ -145,32 +159,37 @@ export function AnalyticsQueryForm({
     onSelectedHitsChange([...selectedHits, hit]);
   }
 
-  function submit(values: AnalyticsFormValues) {
+  async function submit(values: AnalyticsFormValues) {
     const selectedObjectKeys = values.mode === "search" ? selectedHits.map((item) => item.object_key) : [];
-    const trimmedQuery = values.query.trim();
+    const trimmedQuery = (values.query ?? "").trim();
+    const templateCode = (values.template_code ?? "").trim();
 
     if (values.mode === "search" && !trimmedQuery && !selectedObjectKeys.length) {
       form.setError("query", { type: "manual", message: "Введите запрос или выберите объект." });
       return;
     }
 
-    onSubmit({
+    await onSubmit({
       mode: values.mode,
-      template_code: values.mode === "template" ? values.template_code : null,
+      template_code: values.mode === "template" ? templateCode : null,
       query: values.mode === "search" && !selectedObjectKeys.length ? trimmedQuery || null : null,
       object_keys: selectedObjectKeys,
       metrics: values.metrics,
       date_mode: values.date_mode,
-      date_from: values.date_mode === "range" ? values.date_from : null,
-      date_to: values.date_mode === "range" ? values.date_to : null,
-      base_date: values.date_mode === "compare" ? values.base_date : null,
-      compare_date: values.date_mode === "compare" ? values.compare_date : null
+      date_from: values.date_mode === "range" ? values.date_from || null : null,
+      date_to: values.date_mode === "range" ? values.date_to || null : null,
+      base_date: values.date_mode === "compare" ? values.base_date || null : null,
+      compare_date: values.date_mode === "compare" ? values.compare_date || null : null
     });
+  }
+
+  function handleInvalidSubmit() {
+    toast.error("Проверьте параметры выборки: одно из обязательных полей не заполнено.");
   }
 
   return (
     <Form {...form}>
-      <form className="grid gap-5" onSubmit={form.handleSubmit(submit)}>
+      <form className="grid gap-5" onSubmit={form.handleSubmit(submit, handleInvalidSubmit)}>
         <div className="grid gap-3 md:grid-cols-[13rem_minmax(0,1fr)]">
           <FormField
             control={form.control}
@@ -225,6 +244,9 @@ export function AnalyticsQueryForm({
                     </div>
                   </FormControl>
                   <FormMessage />
+                  <p className="text-xs text-muted-foreground">
+                    Можно выбрать объект из списка. Если ничего не выбрано, запрос уйдет как текстовый фильтр.
+                  </p>
                 </FormItem>
               )}
             />
@@ -329,20 +351,23 @@ export function AnalyticsQueryForm({
 
         <div className="grid gap-3">
           <FormField
-            control={form.control}
-            name="date_mode"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Период</FormLabel>
+              control={form.control}
+              name="date_mode"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Период</FormLabel>
                 <FormControl>
                   <SelectControl {...field}>
                     <option value="range">Диапазон</option>
                     <option value="compare">Сравнение</option>
                   </SelectControl>
-                </FormControl>
-              </FormItem>
-            )}
-          />
+                  </FormControl>
+                  <p className="text-xs text-muted-foreground">
+                    Диапазон строит обычную таблицу и график, сравнение показывает разницу между двумя срезами.
+                  </p>
+                </FormItem>
+              )}
+            />
 
           {dateMode === "range" ? (
             <div className="grid gap-3 sm:grid-cols-2">
@@ -384,6 +409,7 @@ export function AnalyticsQueryForm({
                     <FormControl>
                       <DateControl {...field} />
                     </FormControl>
+                    <FormMessage />
                   </FormItem>
                 )}
               />
@@ -400,6 +426,9 @@ export function AnalyticsQueryForm({
                   </FormItem>
                 )}
               />
+              <p className="sm:col-span-2 text-xs text-muted-foreground">
+                Рабочий пример для СКК: база 01.02.2025, сравнить с 01.01.2026.
+              </p>
             </div>
           )}
 

@@ -72,7 +72,7 @@ export function UserMenu() {
           <DropdownMenuItem asChild>
             <Link to="/workspace">
               <LayoutDashboard size={16} />
-              {isAdmin ? "Дашбоард" : "Рабочая область"}
+              {isAdmin ? "Рабочее пространство" : "Рабочая область"}
             </Link>
           </DropdownMenuItem>
           {isAdmin ? (

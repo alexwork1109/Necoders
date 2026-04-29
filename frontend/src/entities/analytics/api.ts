@@ -34,6 +34,7 @@ export type AnalyticsExportPayload = AnalyticsQueryPayload & {
 };
 
 export type AnalyticsImportPayload = {
+  files?: File[] | FileList | null;
   folder_path?: string | null;
 };
 
@@ -41,8 +42,21 @@ export async function getAnalyticsSources() {
   return apiRequest("/analytics/sources", { method: "GET" }, analyticsSourcesResponseSchema);
 }
 
-export async function importDemoAnalytics(payload: AnalyticsImportPayload = {}) {
-  return apiRequest<{ message: string; sources: number; issues: number }>("/analytics/import-demo", { method: "POST", body: payload });
+export async function importAnalytics(payload: AnalyticsImportPayload = {}) {
+  const files = payload.files ? Array.from(payload.files) : [];
+  if (files.length) {
+    const body = new FormData();
+    files.forEach((file) => {
+      body.append("files", file, file.webkitRelativePath || file.name);
+    });
+    return apiRequest<{ message: string; sources: number; issues: number }>("/analytics/import", { method: "POST", body });
+  }
+
+  return apiRequest<{ message: string; sources: number; issues: number }>("/analytics/import", { method: "POST", body: payload });
+}
+
+export async function clearAnalyticsImport() {
+  return apiRequest<{ message: string }>("/analytics/import", { method: "DELETE" });
 }
 
 export async function getAnalyticsIssues() {

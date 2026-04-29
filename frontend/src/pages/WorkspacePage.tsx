@@ -17,16 +17,18 @@ import {
   LayoutDashboard,
   ListChecks,
   Loader2,
-  MessageSquareText,
+  Mic,
   Play,
   RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   Sparkles,
+  Square,
   TableProperties,
   Trash2
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -50,11 +52,14 @@ import {
   useAnalyticsMetrics,
   useAnalyticsSources,
   useAnalyticsTemplates,
-  useImportDemoAnalytics,
+  useClearAnalyticsImport,
+  useImportAnalytics,
   useRunAnalyticsCompare,
   useRunAnalyticsQuery,
   useRunAnalyticsTimeline
 } from "../entities/analytics/hooks";
+import type { AssistantAction, AssistantToolCall } from "../entities/assistant/api";
+import { useAskAssistant, useAssistantHealth, useTranscribeAssistantAudio } from "../entities/assistant/hooks";
 import { useMe } from "../entities/user/hooks";
 import { AnalyticsQueryForm } from "../features/analytics-query/AnalyticsQueryForm";
 import { cn } from "../shared/lib/utils";
@@ -65,7 +70,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../sh
 import { Input } from "../shared/ui/input";
 import { Skeleton } from "../shared/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shared/ui/tabs";
-import { AnalyticsResults } from "../widgets/AnalyticsResults/AnalyticsResults";
+import { AnalyticsResults, type AnalyticsRunStatus } from "../widgets/AnalyticsResults/AnalyticsResults";
 import { UserMenu } from "../widgets/UserMenu/UserMenu";
 
 type WorkspaceTab =
@@ -98,7 +103,18 @@ type SearchRequest = {
   nonce: number;
 };
 
+type AssistantChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  meta?: string;
+  toolCalls?: AssistantToolCall[];
+  actions?: AssistantAction[];
+};
+
 const DEFAULT_METRICS = ["LIMITS", "BO", "CASH_RCHB", "AGREEMENT_MBT", "CONTRACT_AMOUNT", "CONTRACT_PAYMENT"];
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 const NAV_ITEMS: Array<{ value: WorkspaceTab; label: string; icon: LucideIcon }> = [
   { value: "constructor", label: "Конструктор", icon: LayoutDashboard },
@@ -114,7 +130,7 @@ const TEMPLATE_RULES: Record<string, string> = {
   kik: "КЦСР содержит 978",
   skk: "КЦСР содержит 6105",
   two_three: "КЦСР содержит 970",
-  okv: "ДопКР не 000 или КВР 400/406/407/408/460-466"
+  okv: "ДопКР не равен 0"
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -167,6 +183,14 @@ function formatMoney(value: number) {
     currency: "RUB",
     maximumFractionDigits: 0
   }).format(value);
+}
+
+function pluralRu(value: number, one: string, few: string, many: string) {
+  const normalized = Math.abs(value);
+  if (normalized % 100 >= 11 && normalized % 100 <= 14) return many;
+  if (normalized % 10 === 1) return one;
+  if (normalized % 10 >= 2 && normalized % 10 <= 4) return few;
+  return many;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -241,7 +265,7 @@ function createTemplatePayload(templateCode: string, dateMode: "range" | "compar
       date_mode: "compare",
       date_from: null,
       date_to: null,
-      base_date: "2025-01-01",
+      base_date: "2025-02-01",
       compare_date: "2026-01-01"
     };
   }
@@ -257,6 +281,27 @@ function createTemplatePayload(templateCode: string, dateMode: "range" | "compar
     date_to: "2026-04-01",
     base_date: null,
     compare_date: null
+  };
+}
+
+function assistantActionPayload(value: unknown): AnalyticsQueryPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const metrics = Array.isArray(item.metrics) ? item.metrics.filter((metric): metric is string => typeof metric === "string") : [];
+  if (!metrics.length) return null;
+  const mode = item.mode === "template" ? "template" : "search";
+  const dateMode = item.date_mode === "compare" ? "compare" : "range";
+  return {
+    mode,
+    template_code: typeof item.template_code === "string" ? item.template_code : null,
+    query: typeof item.query === "string" ? item.query : null,
+    object_keys: Array.isArray(item.object_keys) ? item.object_keys.filter((key): key is string => typeof key === "string") : [],
+    metrics,
+    date_mode: dateMode,
+    date_from: typeof item.date_from === "string" ? item.date_from : null,
+    date_to: typeof item.date_to === "string" ? item.date_to : null,
+    base_date: typeof item.base_date === "string" ? item.base_date : null,
+    compare_date: typeof item.compare_date === "string" ? item.compare_date : null
   };
 }
 
@@ -284,12 +329,16 @@ export function WorkspacePage() {
   const issues = useAnalyticsIssues();
   const metrics = useAnalyticsMetrics();
   const templates = useAnalyticsTemplates();
-  const importDemo = useImportDemoAnalytics();
+  const importData = useImportAnalytics();
+  const clearImport = useClearAnalyticsImport();
   const query = useRunAnalyticsQuery();
   const timeline = useRunAnalyticsTimeline();
   const compare = useRunAnalyticsCompare();
   const drilldown = useAnalyticsDrilldown();
   const exportMutation = useAnalyticsExport();
+  const assistantHealth = useAssistantHealth();
+  const askAssistant = useAskAssistant();
+  const transcribeAssistant = useTranscribeAssistantAudio();
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("constructor");
   const [selectedHits, setSelectedHits] = useState<AnalyticsSearchHit[]>([]);
@@ -302,7 +351,10 @@ export function WorkspacePage() {
   const [drilldownOpen, setDrilldownOpen] = useState(false);
   const [history, setHistory] = useState<SelectionHistoryItem[]>([]);
   const [lastExport, setLastExport] = useState<LastExport | null>(null);
+  const [lastCalculatedAt, setLastCalculatedAt] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<AnalyticsRunStatus | null>(null);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantChatMessage[]>([]);
 
   const isLoading = query.isPending || timeline.isPending || compare.isPending;
   const sourceItems = sources.data?.items ?? [];
@@ -318,6 +370,32 @@ export function WorkspacePage() {
   const activeWarnings = queryResult?.warnings.length ?? 0;
 
   const metricNameByCode = useMemo(() => new Map(metricItems.map((metric) => [metric.code, metric.name])), [metricItems]);
+  const assistantContext = useMemo(
+    () => ({
+      selection: lastPayload ? payloadTitle(lastPayload, templateItems) : "Нет активной выборки",
+      rows: activeRows,
+      amount: activeRows ? formatMoney(activeAmount) : "—",
+      warnings: activeWarnings,
+      metrics: lastPayload?.metrics.map((metric) => metricLabel(metric, metricItems)) ?? [],
+      available_metrics: metricItems.map((metric) => ({
+        code: metric.code,
+        name: metric.name,
+        source_type: metric.source_type
+      })),
+      templates: templateItems.map((template) => ({
+        code: template.code,
+        name: template.name,
+        description: template.description
+      })),
+      objects: selectedHits.slice(0, 10).map((hit) => ({
+        object_key: hit.object_key,
+        display_name: hit.display_name,
+        codes: hit.matched_codes,
+        source_types: hit.source_types
+      }))
+    }),
+    [activeAmount, activeRows, activeWarnings, lastPayload, metricItems, selectedHits, templateItems]
+  );
 
   function rememberSelection(payload: AnalyticsQueryPayload, rows: number, amount: number, warnings: number) {
     const title = payloadTitle(payload, templateItems);
@@ -336,35 +414,80 @@ export function WorkspacePage() {
   }
 
   async function handleSubmit(payload: AnalyticsQueryPayload) {
+    const title = payloadTitle(payload, templateItems);
     setLastPayload(payload);
     setSelectedRow(null);
     setDrilldownRows([]);
     setCompareRows([]);
     setTimelinePoints([]);
+    setQueryResult(null);
+    setLastCalculatedAt(null);
+    setRunStatus(null);
 
     try {
       if (payload.date_mode === "compare") {
         const response = await compare.mutateAsync(payload);
-        setQueryResult(null);
+        const rowsCount = response.items.length;
+        const rowsWord = pluralRu(rowsCount, "строка", "строки", "строк");
         setCompareRows(response.items);
+        setLastCalculatedAt(new Date().toISOString());
+        setRunStatus({
+          variant: rowsCount ? "success" : "empty",
+          title: rowsCount ? "Сравнение сформировано" : "Сравнение выполнено, различий нет",
+          description: rowsCount
+            ? `${title}: найдено ${rowsCount} ${rowsWord}.`
+            : `${title}: по выбранным условиям строки не найдены. Проверьте даты, шаблон, текст поиска или выбранные показатели.`
+        });
         rememberSelection(
           payload,
-          response.items.length,
+          rowsCount,
           response.items.reduce((sum, row) => sum + row.compare_value, 0),
           0
         );
+        if (rowsCount) {
+          toast.success(`Сравнение сформировано: ${rowsCount} ${rowsWord}.`);
+        } else {
+          toast.info("Сравнение выполнено, строк нет.");
+        }
         return;
       }
 
-      const [queryResponse, timelineResponse] = await Promise.all([
-        query.mutateAsync(payload),
-        timeline.mutateAsync(payload)
-      ]);
+      const queryResponse = await query.mutateAsync(payload);
       setQueryResult(queryResponse);
-      setTimelinePoints(timelineResponse.items);
+      let timelineWarning: string | null = null;
+      try {
+        const timelineResponse = await timeline.mutateAsync(payload);
+        setTimelinePoints(timelineResponse.items);
+      } catch (timelineError) {
+        timelineWarning = timelineError instanceof Error ? timelineError.message : "График не рассчитан.";
+        setTimelinePoints([]);
+        toast.error(`Таблица сформирована, но график не загрузился: ${timelineWarning}`);
+      }
+      const rowsCount = queryResponse.rows.length;
+      const rowsWord = pluralRu(rowsCount, "строка", "строки", "строк");
+      setLastCalculatedAt(new Date().toISOString());
+      setRunStatus({
+        variant: rowsCount ? "success" : "empty",
+        title: rowsCount ? "Выборка сформирована" : "Выборка выполнена, строк нет",
+        description: rowsCount
+          ? `${title}: найдено ${rowsCount} ${rowsWord}.`
+          : `${title}: по выбранным условиям строки не найдены. Попробуйте СКК, код 6105 или даты 01.01.2025-01.04.2026.`,
+        details: timelineWarning ? [`График не рассчитан: ${timelineWarning}`] : undefined
+      });
       rememberSelection(payload, queryResponse.rows.length, sumTotals(queryResponse.totals), queryResponse.warnings.length);
+      if (rowsCount) {
+        toast.success(`Выборка сформирована: ${rowsCount} ${rowsWord}.`);
+      } else {
+        toast.info("Выборка выполнена, строк нет.");
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Запрос не выполнен.");
+      const message = error instanceof Error ? error.message : "Запрос не выполнен.";
+      setRunStatus({
+        variant: "error",
+        title: "Запрос не выполнен",
+        description: `${title}: ${message}`
+      });
+      toast.error(message);
     }
   }
 
@@ -390,19 +513,44 @@ export function WorkspacePage() {
     try {
       const blob = await exportMutation.mutateAsync({ ...payload, format });
       setLastExport({ format, createdAt: new Date().toISOString(), size: blob.size });
-      downloadBlob(blob, `budget-selection.${format}`);
+      downloadBlob(blob, `бюджетная-выборка.${format}`);
       toast.success(`Экспорт ${format.toUpperCase()} сформирован.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Экспорт не выполнен.");
     }
   }
 
-  async function handleImportDemo(folderPath?: string) {
+  async function handleImportFiles(files: File[]) {
     try {
-      const response = await importDemo.mutateAsync({ folder_path: folderPath?.trim() || null });
+      const response = await importData.mutateAsync({ files });
       toast.success(response.message);
+      setLastPayload(null);
+      setQueryResult(null);
+      setCompareRows([]);
+      setTimelinePoints([]);
+      setHistory([]);
+      setLastCalculatedAt(null);
+      setRunStatus(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Импорт не выполнен.");
+    }
+  }
+
+  async function handleClearImport() {
+    try {
+      const response = await clearImport.mutateAsync();
+      toast.success(response.message);
+      setLastPayload(null);
+      setQueryResult(null);
+      setCompareRows([]);
+      setTimelinePoints([]);
+      setHistory([]);
+      setLastCalculatedAt(null);
+      setRunStatus(null);
+      setSelectedHits([]);
+      setDrilldownRows([]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Импортированные данные не удалены.");
     }
   }
 
@@ -421,6 +569,65 @@ export function WorkspacePage() {
     setSelectedHits([]);
     setSearchRequest({ value: queryText, nonce: Date.now() });
     await handleSubmit(createSearchPayload(queryText));
+  }
+
+  async function handleAssistantAction(action: AssistantAction) {
+    if (action.type !== "apply_analytics_selection") return;
+    const payload = assistantActionPayload(action.payload);
+    if (!payload) {
+      toast.error("ИИ вернул некорректные параметры выборки.");
+      return;
+    }
+    await handleSubmit(payload);
+    toast.success(action.label || "Активная выборка обновлена.");
+  }
+
+  async function handleAssistantAsk(value: string) {
+    const prompt = value.trim();
+    if (!prompt) return;
+
+    const userMessage: AssistantChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: prompt,
+      createdAt: new Date().toISOString()
+    };
+    const historyForRequest = assistantMessages.slice(-10);
+    setAssistantMessages((items) => [...items, userMessage]);
+    setActiveTab("assistant");
+
+    try {
+      const response = await askAssistant.mutateAsync({
+        prompt,
+        messages: historyForRequest.map((message) => ({ role: message.role, content: message.content })),
+        context: assistantContext
+      });
+      setAssistantMessages((items) => [
+        ...items,
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content: response.text,
+          createdAt: new Date().toISOString(),
+          toolCalls: response.tool_calls as AssistantToolCall[],
+          actions: response.actions as AssistantAction[]
+        }
+      ]);
+      for (const action of response.actions as AssistantAction[]) {
+        await handleAssistantAction(action);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ИИ-помощник недоступен.");
+    }
+  }
+
+  async function handleAssistantTranscribe(file: File) {
+    try {
+      const response = await transcribeAssistant.mutateAsync(file);
+      await handleAssistantAsk(response.text);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Аудио не распознано.");
+    }
   }
 
   async function handleOpenCodeSearch() {
@@ -464,10 +671,10 @@ export function WorkspacePage() {
             totalWarnings={totalWarnings}
             onExport={() => handleExport(lastPayload, "xlsx")}
             onOpenQuality={() => setActiveTab("quality")}
-            onSearch={handleSearchRequest}
+            onSearch={handleAssistantAsk}
           />
 
-          <main className="px-4 py-5 sm:px-6 lg:px-7 lg:py-6">
+          <main className="overflow-x-hidden px-4 py-5 sm:px-6 lg:px-7 lg:py-6">
             <TabsList className="mb-5 grid h-auto w-full grid-cols-2 gap-1 bg-transparent p-0 text-foreground sm:grid-cols-4 lg:hidden">
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon;
@@ -487,20 +694,21 @@ export function WorkspacePage() {
             <div className="mx-auto grid max-w-[96rem] gap-5">
             <TabsContent value="constructor" className="mt-0">
               <ConstructorTab
-                activeWarnings={activeWarnings}
                 compareRows={compareRows}
                 drilldownOpen={drilldownOpen}
                 drilldownRows={drilldownRows}
                 isLoading={isLoading}
+                lastCalculatedAt={lastCalculatedAt}
                 lastPayload={lastPayload}
                 metrics={metricItems}
                 metricsLoading={metrics.isLoading}
                 queryResult={queryResult}
+                runStatus={runStatus}
                 selectedHits={selectedHits}
                 selectedRow={selectedRow}
                 sourceItems={sourceItems}
                 templates={templateItems}
-                activeTemplateCode={lastPayload?.mode === "template" ? lastPayload.template_code ?? "skk" : "skk"}
+                activeTemplateCode={lastPayload?.mode === "template" ? lastPayload.template_code ?? "skk" : undefined}
                 templatesLoading={templates.isLoading}
                 timelinePoints={timelinePoints}
                 onCompareTemplate={handleCompareTemplate}
@@ -533,18 +741,25 @@ export function WorkspacePage() {
               <SourcesTab
                 error={sources.error}
                 isAdmin={isAdmin}
-                isImporting={importDemo.isPending}
+                isClearing={clearImport.isPending}
+                isImporting={importData.isPending}
                 isLoading={sources.isLoading}
                 sourceItems={sourceItems}
                 totalImported={totalImported}
                 totalRows={totalRows}
                 totalWarnings={totalWarnings}
-                onImportDemo={handleImportDemo}
+                onClearImport={handleClearImport}
+                onImportFiles={handleImportFiles}
               />
             </TabsContent>
 
             <TabsContent value="quality" className="mt-0">
-              <QualityTab isLoading={issues.isLoading} issueItems={issueItems} sourceItems={sourceItems} />
+              <QualityTab
+                activeIssueItems={queryResult?.warnings ?? []}
+                isLoading={issues.isLoading}
+                issueItems={issueItems}
+                sourceItems={sourceItems}
+              />
             </TabsContent>
 
             <TabsContent value="selections" className="mt-0">
@@ -575,7 +790,19 @@ export function WorkspacePage() {
             </TabsContent>
 
             <TabsContent value="assistant" className="mt-0">
-              <AssistantTab activeAmount={activeAmount} activeRows={activeRows} lastPayload={lastPayload} templates={templateItems} warningsCount={activeWarnings} />
+              <AssistantTab
+                activeAmount={activeAmount}
+                activeRows={activeRows}
+                healthOk={assistantHealth.data?.ok ?? false}
+                isPending={askAssistant.isPending}
+                isTranscribing={transcribeAssistant.isPending}
+                lastPayload={lastPayload}
+                messages={assistantMessages}
+                templates={templateItems}
+                warningsCount={activeWarnings}
+                onAsk={handleAssistantAsk}
+                onTranscribe={handleAssistantTranscribe}
+              />
             </TabsContent>
             </div>
           </main>
@@ -594,9 +821,8 @@ function BudgetLogo() {
         <span className="rounded-[3px] border-2 border-primary" />
         <span className="rounded-[3px] bg-primary" />
       </span>
-      <span className="grid min-w-0 leading-tight">
-        <span className="truncate text-base font-semibold text-slate-950">Бюджетный</span>
-        <span className="truncate text-base font-semibold text-slate-950">конструктор</span>
+      <span className="min-w-0 text-sm font-semibold leading-snug text-slate-950">
+        Конструктор аналитических выборок
       </span>
     </Link>
   );
@@ -635,25 +861,26 @@ function WorkspaceTopBar({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onSearch(value);
+    void onSearch(value);
+    setValue("");
   }
 
   return (
     <header className="sticky top-0 z-30 border-b bg-card/95 backdrop-blur">
-      <div className="flex min-h-[60px] items-center gap-3 px-4 sm:px-6 lg:px-7">
-        <form className="flex min-w-0 flex-1 items-center gap-2 rounded-md border bg-background px-3 shadow-sm" onSubmit={submit}>
+      <div className="grid min-h-14 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 sm:px-6 lg:gap-3 lg:px-7">
+        <form className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-3 shadow-sm" onSubmit={submit}>
           <Search className="size-4 text-slate-500" />
           <input
             ref={inputRef}
             className="h-9 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
-            placeholder="Поиск по объектам, КЦСР, организациям, договорам..."
+            placeholder="Спросите ИИ: покажи СКК за 2025, объясни результат..."
             value={value}
             onChange={(event) => setValue(event.target.value)}
           />
-          <button type="submit" className="sr-only">Искать</button>
+          <button type="submit" className="sr-only">Спросить ИИ</button>
           <span className="hidden rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline">Ctrl + K</span>
         </form>
-        <div className="ml-auto flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center justify-end gap-3">
           <Button
             type="button"
             variant="outline"
@@ -706,7 +933,7 @@ function ConstructorLead({
   onOpenTemplate,
   onSearch
 }: {
-  activeTemplateCode: string;
+  activeTemplateCode?: string;
   sourceItems: AnalyticsSource[];
   templates: AnalyticsTemplate[];
   onCompareTemplate: (templateCode: string) => void;
@@ -726,13 +953,16 @@ function ConstructorLead({
   }
 
   return (
-    <section className="grid min-w-0 gap-5">
-      <div className="grid min-w-0 gap-4">
-        <h1 className="text-[28px] font-semibold leading-tight tracking-normal text-slate-950">Конструктор выборок</h1>
-        <form className="flex h-14 min-w-0 items-center gap-3 rounded-md border bg-card px-4 shadow-sm" onSubmit={submitSearch}>
-          <Search className="size-5 shrink-0 text-slate-500" />
+    <Card className="min-w-0 self-start overflow-hidden">
+      <CardHeader className="p-4 pb-3">
+        <CardTitle className="text-lg">Поиск и состояние данных</CardTitle>
+        <CardDescription className="leading-snug">Быстрый переход к объекту и контроль доступных источников.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid min-w-0 gap-3 p-4 pt-0">
+        <form className="flex h-11 min-w-0 items-center gap-2 rounded-md border bg-card px-3 shadow-sm" onSubmit={submitSearch}>
+          <Search className="size-4 shrink-0 text-slate-500" />
           <input
-            className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-slate-400"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
             placeholder="Например: 6105, Тында, котельная, Ф.2025, получатель"
             value={searchValue}
             onChange={(event) => setSearchValue(event.target.value)}
@@ -747,13 +977,19 @@ function ConstructorLead({
             Состояние данных
             <Info className="size-4 text-muted-foreground" />
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {latestSources.map((source) => (
-              <DataStatusCard key={source.id} source={source} />
-            ))}
-          </div>
+          {latestSources.length ? (
+            <div className="grid gap-2">
+              {latestSources.map((source) => (
+                <DataStatusCard key={source.id} source={source} />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed bg-card p-4 text-sm text-muted-foreground">
+              Данные не импортированы. Зайдите под администратором и импортируйте папку с выгрузками.
+            </div>
+          )}
         </div>
-      </div>
+      </CardContent>
 
       <div className="hidden">
         <div>
@@ -791,7 +1027,7 @@ function ConstructorLead({
           </div>
         </div>
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -817,27 +1053,31 @@ function DataStatusCard({ source }: { source: AnalyticsSource }) {
   const hasIssues = source.warnings_count > 0 || source.errors_count > 0;
 
   return (
-    <div className="grid min-h-40 gap-3 rounded-md border bg-card p-4 shadow-sm">
+    <div className="grid min-w-0 gap-2 rounded-md border bg-card p-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
-          <Database className="size-5 text-blue-600" />
-          {sourceLabel(source.source_type)}
+        <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-950">
+          <Database className="size-4 shrink-0 text-blue-600" />
+          <span className="truncate">{sourceLabel(source.source_type)}</span>
         </div>
         {source.errors_count ? <XCircleIcon /> : <CheckCircle2 className="size-5 text-success" />}
       </div>
-      <div className="grid gap-1 text-sm">
-        <span className="text-xs text-muted-foreground">Загружено</span>
-        <span className="font-medium">{formatDate(source.period_date)}</span>
-        <span className="text-xs text-muted-foreground">Строк</span>
-        <span className="font-medium">{formatNumber(source.rows_imported)}</span>
+      <div className="grid grid-cols-2 gap-2 text-sm">
+        <span>
+          <span className="block text-xs text-muted-foreground">Период</span>
+          <span className="font-medium">{formatDate(source.period_date)}</span>
+        </span>
+        <span>
+          <span className="block text-xs text-muted-foreground">Строк</span>
+          <span className="font-medium">{formatNumber(source.rows_imported)}</span>
+        </span>
       </div>
       <div className={cn("mt-auto flex items-start gap-2 text-xs", hasIssues ? "text-orange-600" : "text-success")}>
         {hasIssues ? <AlertTriangle className="mt-0.5 size-4 shrink-0" /> : <CheckCircle2 className="mt-0.5 size-4 shrink-0" />}
         <span>
           {source.errors_count
-            ? `${formatNumber(source.errors_count)} ошибок импорта`
+            ? `${formatNumber(source.errors_count)} ${pluralRu(source.errors_count, "ошибка импорта", "ошибки импорта", "ошибок импорта")}`
             : source.warnings_count
-              ? `${formatNumber(source.warnings_count)} предупреждений`
+              ? `${formatNumber(source.warnings_count)} ${pluralRu(source.warnings_count, "предупреждение", "предупреждения", "предупреждений")}`
               : "Без предупреждений"}
         </span>
       </div>
@@ -863,16 +1103,17 @@ function ActionTile({ icon: Icon, label, onClick }: { icon: LucideIcon; label: s
 }
 
 function ConstructorTab({
-  activeWarnings,
   activeTemplateCode,
   compareRows,
   drilldownOpen,
   drilldownRows,
   isLoading,
+  lastCalculatedAt,
   lastPayload,
   metrics,
   metricsLoading,
   queryResult,
+  runStatus,
   selectedHits,
   selectedRow,
   sourceItems,
@@ -890,16 +1131,17 @@ function ConstructorTab({
   searchRequest,
   onSubmit
 }: {
-  activeWarnings: number;
-  activeTemplateCode: string;
+  activeTemplateCode?: string;
   compareRows: AnalyticsCompareRow[];
   drilldownOpen: boolean;
   drilldownRows: AnalyticsDrilldownRecord[];
   isLoading: boolean;
+  lastCalculatedAt: string | null;
   lastPayload: AnalyticsQueryPayload | null;
   metrics: AnalyticsMetric[];
   metricsLoading: boolean;
   queryResult: AnalyticsQueryResponse | null;
+  runStatus: AnalyticsRunStatus | null;
   selectedHits: AnalyticsSearchHit[];
   selectedRow: AnalyticsQueryRow | null;
   sourceItems: AnalyticsSource[];
@@ -915,45 +1157,31 @@ function ConstructorTab({
   onSearch: (value: string) => void;
   onSelectedHitsChange: (items: AnalyticsSearchHit[]) => void;
   searchRequest: SearchRequest | null;
-  onSubmit: (payload: AnalyticsQueryPayload) => void;
+  onSubmit: (payload: AnalyticsQueryPayload) => Promise<void> | void;
 }) {
   return (
-    <div className="grid gap-4">
-      <ConstructorLead
-        activeTemplateCode={activeTemplateCode}
-        sourceItems={sourceItems}
-        templates={templates}
-        onCompareTemplate={onCompareTemplate}
-        onOpenCodeSearch={onOpenCodeSearch}
-        onOpenQuality={onOpenQuality}
-        onOpenTemplate={onOpenTemplate}
-        onSearch={onSearch}
-      />
+    <div className="grid min-w-0 gap-4">
+      <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(18rem,0.7fr)_minmax(32rem,1.3fr)] 2xl:grid-cols-[minmax(20rem,0.68fr)_minmax(38rem,1.32fr)]">
+        <ConstructorLead
+          activeTemplateCode={activeTemplateCode}
+          sourceItems={sourceItems}
+          templates={templates}
+          onCompareTemplate={onCompareTemplate}
+          onOpenCodeSearch={onOpenCodeSearch}
+          onOpenQuality={onOpenQuality}
+          onOpenTemplate={onOpenTemplate}
+          onSearch={onSearch}
+        />
 
-      {activeWarnings ? (
-        <Alert className="border-warning/40 bg-warning/10">
-          <AlertTriangle size={18} />
-          <AlertTitle>Есть предупреждения качества в активной выборке</AlertTitle>
-          <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <span>{activeWarnings} предупреждений влияют на интерпретацию результата.</span>
-            <Button type="button" variant="outline" size="sm" onClick={onOpenQuality}>
-              Открыть качество данных
-              <ArrowRight size={15} />
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
-      <section className="grid min-w-0 gap-4 xl:grid-cols-[26rem_minmax(0,1fr)]">
-        <Card className="h-fit min-w-0 overflow-hidden">
-          <CardHeader className="pb-4">
+        <Card className="h-fit min-w-0 self-start overflow-hidden">
+          <CardHeader className="p-4 pb-3">
             <CardTitle className="flex items-center gap-2 text-lg">
               <Search size={18} />
               Параметры выборки
             </CardTitle>
             <CardDescription>Поиск, шаблон, показатели и период обрабатываются текущим API аналитики.</CardDescription>
           </CardHeader>
-          <CardContent className="min-w-0">
+          <CardContent className="min-w-0 p-4 pt-0">
             {metricsLoading || templatesLoading ? (
               <div className="grid gap-3">
                 <Skeleton className="h-10" />
@@ -974,21 +1202,22 @@ function ConstructorTab({
             )}
           </CardContent>
         </Card>
-
-        <div className="min-w-0">
-          <AnalyticsResults
-            result={queryResult}
-            timeline={timelinePoints}
-            compareRows={compareRows}
-            isLoading={isLoading}
-            selectedRow={selectedRow}
-            drilldown={drilldownRows}
-            drilldownOpen={drilldownOpen}
-            onDrilldownOpenChange={onDrilldownOpenChange}
-            onOpenDrilldown={onOpenDrilldown}
-          />
-        </div>
       </section>
+
+      <AnalyticsResults
+        lastCalculatedAt={lastCalculatedAt}
+        result={queryResult}
+        timeline={timelinePoints}
+        compareRows={compareRows}
+        runStatus={runStatus}
+        isLoading={isLoading}
+        selectedRow={selectedRow}
+        drilldown={drilldownRows}
+        drilldownOpen={drilldownOpen}
+        onDrilldownOpenChange={onDrilldownOpenChange}
+        onOpenDrilldown={onOpenDrilldown}
+        onOpenQuality={onOpenQuality}
+      />
 
       {lastPayload ? (
         <div className="rounded-lg border bg-card p-4 text-sm">
@@ -1329,25 +1558,37 @@ function TemplatesTab({
 function SourcesTab({
   error,
   isAdmin,
+  isClearing,
   isImporting,
   isLoading,
   sourceItems,
   totalImported,
   totalRows,
   totalWarnings,
-  onImportDemo
+  onClearImport,
+  onImportFiles
 }: {
   error: Error | null;
   isAdmin: boolean;
+  isClearing: boolean;
   isImporting: boolean;
   isLoading: boolean;
   sourceItems: AnalyticsSource[];
   totalImported: number;
   totalRows: number;
   totalWarnings: number;
-  onImportDemo: (folderPath?: string) => void;
+  onClearImport: () => void;
+  onImportFiles: (files: File[]) => void;
 }) {
-  const [folderPath, setFolderPath] = useState("task");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleImportInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    if (files.length) {
+      onImportFiles(files);
+    }
+    event.currentTarget.value = "";
+  }
 
   if (isLoading) {
     return (
@@ -1379,26 +1620,38 @@ function SourcesTab({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle className="text-lg">Источники данных</CardTitle>
-              <CardDescription>Файлы, периоды, объем импорта и технический профиль CSV.</CardDescription>
+              <CardDescription>Администратор выбирает папку с файлами на своем компьютере, сервер импортирует их в БД.</CardDescription>
             </div>
             {isAdmin ? (
-              <div className="grid min-w-0 gap-2 sm:w-[30rem] sm:grid-cols-[minmax(0,1fr)_auto]">
-                <Input
-                  aria-label="Папка импорта"
-                  value={folderPath}
-                  onChange={(event) => setFolderPath(event.target.value)}
-                  placeholder="task или C:\\data\\budget"
+              <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="sr-only"
+                  multiple
+                  onChange={handleImportInputChange}
+                  {...({ directory: "", webkitdirectory: "" } as Record<string, string>)}
                 />
-                <Button type="button" variant="outline" onClick={() => onImportDemo(folderPath)} disabled={isImporting}>
-                  {isImporting ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
-                  Импортировать
+                <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isImporting}>
+                  {isImporting ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />}
+                  Выбрать папку
+                </Button>
+                <Button type="button" variant="outline" onClick={onClearImport} disabled={isClearing || isImporting || !sourceItems.length}>
+                  {isClearing ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+                  Очистить БД
                 </Button>
               </div>
             ) : null}
           </div>
         </CardHeader>
         <CardContent>
-          <div className="overflow-auto">
+          {!sourceItems.length ? (
+            <div className="rounded-md border border-dashed bg-background p-6 text-sm text-muted-foreground">
+              Данные еще не импортированы. Администратор должен нажать «Выбрать папку» и выбрать каталог с исходными файлами.
+            </div>
+          ) : (
+          <>
+          <div className="hidden overflow-auto md:block">
             <table className="w-full min-w-[64rem] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
@@ -1434,19 +1687,66 @@ function SourcesTab({
               </tbody>
             </table>
           </div>
+          <div className="grid gap-2 md:hidden">
+            {sourceItems.map((source) => (
+              <div key={`${source.id}-mobile`} className="rounded-md border bg-background p-3 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <Badge variant="secondary">{sourceLabel(source.source_type)}</Badge>
+                    <div className="mt-2 break-words font-medium">{source.original_name}</div>
+                    <div className="mt-1 text-muted-foreground">{formatDate(source.period_date)}</div>
+                  </div>
+                  <div className="text-right text-xs text-muted-foreground">{source.checksum.slice(0, 8)}...</div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <div className="text-muted-foreground">Всего</div>
+                    <div className="font-semibold">{formatNumber(source.rows_total)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">В БД</div>
+                    <div className="font-semibold">{formatNumber(source.rows_imported)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Проблемы</div>
+                    <div className="font-semibold">{formatNumber(source.warnings_count + source.errors_count)}</div>
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {sourceMetadata(source, "encoding")} · {sourceMetadata(source, "delimiter")} · строка {sourceMetadata(source, "header_row")}
+                </div>
+              </div>
+            ))}
+          </div>
+          </>
+          )}
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function QualityTab({ isLoading, issueItems, sourceItems }: { isLoading: boolean; issueItems: AnalyticsIssue[]; sourceItems: AnalyticsSource[] }) {
+function QualityTab({
+  activeIssueItems,
+  isLoading,
+  issueItems,
+  sourceItems
+}: {
+  activeIssueItems: AnalyticsIssue[];
+  isLoading: boolean;
+  issueItems: AnalyticsIssue[];
+  sourceItems: AnalyticsSource[];
+}) {
   const grouped = Array.from(
     issueItems.reduce((map, issue) => {
       map.set(issue.code, (map.get(issue.code) ?? 0) + 1);
       return map;
     }, new Map<string, number>())
   ).sort((a, b) => b[1] - a[1]);
+  const [activePage, setActivePage] = useState(1);
+  const [activePerPage, setActivePerPage] = useState(10);
+  const [allPage, setAllPage] = useState(1);
+  const [allPerPage, setAllPerPage] = useState(25);
 
   if (isLoading) {
     return (
@@ -1457,65 +1757,218 @@ function QualityTab({ isLoading, issueItems, sourceItems }: { isLoading: boolean
     );
   }
 
-  if (!issueItems.length) {
-    return <EmptyState icon={ShieldAlert} title="Предупреждений качества нет" description="Текущий импорт не вернул ошибок или предупреждений." />;
-  }
-
   return (
     <div className="grid gap-4">
-      <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-        {grouped.slice(0, 8).map(([code, count]) => (
-          <div key={code} className="rounded-lg border bg-card p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium">{issueLabel(code)}</div>
-                <div className="mt-2 text-2xl font-semibold">{formatNumber(count)}</div>
-              </div>
-              <AlertTriangle className="size-5 text-warning" />
-            </div>
-          </div>
-        ))}
-      </section>
+      {!issueItems.length && !activeIssueItems.length ? (
+        <EmptyState icon={ShieldAlert} title="Предупреждений качества нет" description="Текущий импорт не вернул ошибок или предупреждений." />
+      ) : null}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-lg">Протокол качества данных</CardTitle>
-          <CardDescription>Сообщения сформированы backend-проверками при импорте и построении выборок.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-auto">
-            <table className="w-full min-w-[62rem] text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Тип</th>
-                  <th className="px-3 py-2 font-medium">Источник</th>
-                  <th className="px-3 py-2 font-medium">Строка</th>
-                  <th className="px-3 py-2 font-medium">Проверка</th>
-                  <th className="px-3 py-2 font-medium">Объяснение</th>
-                </tr>
-              </thead>
-              <tbody>
-                {issueItems.map((issue, index) => {
-                  const source = sourceItems.find((item) => item.id === issue.source_file_id);
-                  return (
-                    <tr key={`${issue.code}-${issue.row_number ?? "source"}-${index}`} className="border-b last:border-b-0">
-                      <td className="px-3 py-3">
-                        <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>
-                          {issue.severity === "error" ? "Ошибка" : "Предупреждение"}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3">{source ? sourceLabel(source.source_type) : "—"}</td>
-                      <td className="px-3 py-3">{issue.row_number ?? "—"}</td>
-                      <td className="px-3 py-3">{issueLabel(issue.code)}</td>
-                      <td className="px-3 py-3">{issue.message}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      {activeIssueItems.length ? (
+        <QualityIssueTable
+          title="Предупреждения активной выборки"
+          description="Эти сообщения относятся к последнему рассчитанному запросу в конструкторе."
+          issues={activeIssueItems}
+          sourceItems={sourceItems}
+          page={activePage}
+          perPage={activePerPage}
+          onPageChange={setActivePage}
+          onPerPageChange={setActivePerPage}
+        />
+      ) : (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Предупреждения активной выборки</CardTitle>
+            <CardDescription>После запуска конструктора здесь появятся только предупреждения, связанные с текущим результатом.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border border-dashed bg-background p-5 text-sm text-muted-foreground">
+              У активной выборки нет предупреждений.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {grouped.length ? (
+        <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+          {grouped.slice(0, 8).map(([code, count]) => (
+            <div key={code} className="rounded-lg border bg-card p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{issueLabel(code)}</div>
+                  <div className="mt-2 text-2xl font-semibold">{formatNumber(count)}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {pluralRu(count, "сообщение", "сообщения", "сообщений")}
+                  </div>
+                </div>
+                <AlertTriangle className="size-5 text-warning" />
+              </div>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      {issueItems.length ? (
+        <QualityIssueTable
+          title="Протокол качества данных"
+          description="Сообщения сформированы backend-проверками при импорте и построении выборок."
+          issues={issueItems}
+          sourceItems={sourceItems}
+          page={allPage}
+          perPage={allPerPage}
+          onPageChange={setAllPage}
+          onPerPageChange={setAllPerPage}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function QualityIssueTable({
+  description,
+  issues,
+  page,
+  perPage,
+  sourceItems,
+  title,
+  onPageChange,
+  onPerPageChange
+}: {
+  description: string;
+  issues: AnalyticsIssue[];
+  page: number;
+  perPage: number;
+  sourceItems: AnalyticsSource[];
+  title: string;
+  onPageChange: (page: number) => void;
+  onPerPageChange: (value: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(issues.length / perPage));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const pageItems = issues.slice((currentPage - 1) * perPage, currentPage * perPage);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      onPageChange(totalPages);
+    }
+  }, [page, totalPages, onPageChange]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="hidden overflow-auto md:block">
+          <table className="w-full min-w-[62rem] text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-muted-foreground">
+                <th className="px-3 py-2 font-medium">Тип</th>
+                <th className="px-3 py-2 font-medium">Источник</th>
+                <th className="px-3 py-2 font-medium">Строка</th>
+                <th className="px-3 py-2 font-medium">Проверка</th>
+                <th className="px-3 py-2 font-medium">Объяснение</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageItems.map((issue, index) => {
+                const source = sourceItems.find((item) => item.id === issue.source_file_id);
+                return (
+                  <tr key={`${issue.code}-${issue.row_number ?? "source"}-${currentPage}-${index}`} className="border-b last:border-b-0">
+                    <td className="px-3 py-3">
+                      <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>
+                        {issue.severity === "error" ? "Ошибка" : "Предупреждение"}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-3">{source ? sourceLabel(source.source_type) : "—"}</td>
+                    <td className="px-3 py-3">{issue.row_number ?? "—"}</td>
+                    <td className="px-3 py-3">{issueLabel(issue.code)}</td>
+                    <td className="px-3 py-3">{issue.message}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="grid gap-2 md:hidden">
+          {pageItems.map((issue, index) => {
+            const source = sourceItems.find((item) => item.id === issue.source_file_id);
+            return (
+              <div key={`${issue.code}-${issue.row_number ?? "source"}-mobile-${currentPage}-${index}`} className="rounded-md border bg-background p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>
+                    {issue.severity === "error" ? "Ошибка" : "Предупреждение"}
+                  </Badge>
+                  <span className="text-muted-foreground">{source ? sourceLabel(source.source_type) : "Источник не указан"}</span>
+                  <span className="text-muted-foreground">строка {issue.row_number ?? "—"}</span>
+                </div>
+                <div className="mt-2 font-medium">{issueLabel(issue.code)}</div>
+                <div className="mt-1 text-muted-foreground">{issue.message}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <QualityPagination
+          page={currentPage}
+          perPage={perPage}
+          total={issues.length}
+          totalPages={totalPages}
+          onPageChange={onPageChange}
+          onPerPageChange={onPerPageChange}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function QualityPagination({
+  page,
+  perPage,
+  total,
+  totalPages,
+  onPageChange,
+  onPerPageChange
+}: {
+  page: number;
+  perPage: number;
+  total: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+  onPerPageChange: (value: number) => void;
+}) {
+  const start = total === 0 ? 0 : (page - 1) * perPage + 1;
+  const end = total === 0 ? 0 : Math.min(page * perPage, total);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border bg-muted/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="text-sm text-muted-foreground">
+        {total > 0 ? `Показано ${start}-${end} из ${formatNumber(total)}` : "Сообщений нет."}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" className="h-9 w-9" onClick={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1} aria-label="Предыдущая страница">
+          <ArrowRight className="rotate-180" size={16} />
+        </Button>
+        <Button type="button" className="h-9 min-w-9 px-3" disabled>
+          {page}
+        </Button>
+        <Button type="button" variant="outline" className="h-9 w-9" onClick={() => onPageChange(Math.min(totalPages, page + 1))} disabled={page >= totalPages} aria-label="Следующая страница">
+          <ArrowRight size={16} />
+        </Button>
+        <select
+          className="h-9 rounded-md border bg-background px-2 text-sm"
+          value={perPage}
+          onChange={(event) => onPerPageChange(Number(event.target.value))}
+          aria-label="Сообщений на странице"
+        >
+          {PAGE_SIZE_OPTIONS.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
@@ -1544,7 +1997,7 @@ function SelectionsTab({
         <CardDescription>Повторный запуск и экспорт используют сохраненные параметры запроса в браузере.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="overflow-auto">
+        <div className="hidden overflow-auto md:block">
           <table className="w-full min-w-[58rem] text-sm">
             <thead>
               <tr className="border-b text-left text-xs text-muted-foreground">
@@ -1584,6 +2037,40 @@ function SelectionsTab({
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="grid gap-2 md:hidden">
+          {history.map((item) => (
+            <div key={`${item.id}-mobile`} className="rounded-md border bg-background p-3 text-sm">
+              <div className="line-clamp-2 font-medium">{item.title}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(item.createdAt)} · {item.payload.date_mode === "compare" ? "Сравнение" : "Диапазон"}</div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <div className="text-muted-foreground">Строк</div>
+                  <div className="font-semibold">{formatNumber(item.rows)}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Сумма</div>
+                  <div className="font-semibold">{formatMoney(item.amount)}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Предупр.</div>
+                  <div className="font-semibold">{formatNumber(item.warnings)}</div>
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button type="button" variant="outline" size="sm" className="flex-1" disabled={isLoading} onClick={() => onReplay(item.payload)}>
+                  <RefreshCw size={15} />
+                  Повторить
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={item.payload.date_mode !== "range"} onClick={() => onExport(item.payload)} aria-label="Экспортировать выборку">
+                  <Download size={15} />
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => onDelete(item.id)} aria-label="Удалить из истории">
+                  <Trash2 size={15} />
+                </Button>
+              </div>
+            </div>
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -1699,22 +2186,161 @@ function ExportTab({
 function AssistantTab({
   activeAmount,
   activeRows,
+  healthOk,
+  isPending,
+  isTranscribing,
   lastPayload,
+  messages,
   templates,
-  warningsCount
+  warningsCount,
+  onAsk,
+  onTranscribe
 }: {
   activeAmount: number;
   activeRows: number;
+  healthOk: boolean;
+  isPending: boolean;
+  isTranscribing: boolean;
   lastPayload: AnalyticsQueryPayload | null;
+  messages: AssistantChatMessage[];
   templates: AnalyticsTemplate[];
   warningsCount: number;
+  onAsk: (value: string) => void;
+  onTranscribe: (file: File) => void;
 }) {
+  const [value, setValue] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    return () => {
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const prompt = value.trim();
+    if (!prompt) return;
+    onAsk(prompt);
+    setValue("");
+  }
+
+  async function toggleRecording() {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      toast.error("Браузер не поддерживает запись аудио.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const options = MediaRecorder.isTypeSupported("audio/webm") ? { mimeType: "audio/webm" } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || "audio/webm";
+        const blob = new Blob(audioChunksRef.current, { type });
+        audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        if (blob.size > 0) {
+          onTranscribe(new File([blob], "assistant-recording.webm", { type }));
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      setIsRecording(false);
+      toast.error(error instanceof Error ? error.message : "Не удалось включить микрофон.");
+    }
+  }
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
-      <Card>
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <Card className="min-w-0 overflow-hidden">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Bot size={18} />
+              ИИ-помощник
+            </CardTitle>
+            <Badge variant={healthOk ? "success" : "muted"}>{healthOk ? "Готов" : "Нет связи"}</Badge>
+          </div>
+          <CardDescription>Запросы уходят в отдельный AI-модуль через внутренний API приложения.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid max-h-[34rem] min-h-80 gap-3 overflow-y-auto rounded-md border bg-background p-3">
+            {messages.length ? (
+              messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={cn(
+                    "max-w-[86%] rounded-md border px-3 py-2 text-sm shadow-sm",
+                    message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-card"
+                  )}
+                >
+                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                  {message.meta ? <div className="mt-2 text-xs opacity-70">{message.meta}</div> : null}
+                  {message.toolCalls?.length ? <AssistantToolEvents items={message.toolCalls} /> : null}
+                  {message.actions?.length ? <AssistantActions items={message.actions} /> : null}
+                </div>
+              ))
+            ) : (
+              <div className="flex min-h-72 flex-col items-center justify-center text-center text-sm text-muted-foreground">
+                <Sparkles className="mb-3 size-8" />
+                <div className="font-medium">Задайте вопрос по выборке или попросите подобрать параметры.</div>
+              </div>
+            )}
+            {isPending ? (
+              <div className="max-w-[86%] rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
+                <Loader2 className="mr-2 inline size-4 animate-spin" />
+                Формируется ответ...
+              </div>
+            ) : null}
+          </div>
+
+          <form className="grid gap-2" onSubmit={submit}>
+            <textarea
+              className="min-h-24 resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              placeholder="Например: объясни текущую выборку или подбери параметры для СКК за 2025 год"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant={isRecording ? "destructive" : "outline"} disabled={isPending || isTranscribing} onClick={toggleRecording}>
+                {isTranscribing ? <Loader2 className="animate-spin" size={16} /> : isRecording ? <Square size={16} /> : <Mic size={16} />}
+                {isRecording ? "Стоп" : isTranscribing ? "Распознавание" : "Записать"}
+              </Button>
+              <Button type="submit" disabled={isPending || !value.trim()}>
+                {isPending ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
+                Отправить
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="h-fit min-w-0 overflow-hidden">
         <CardHeader className="pb-3">
           <CardTitle className="text-lg">Контекст для помощника</CardTitle>
-          <CardDescription>Панель показывает, какие данные можно было бы передать ИИ после подключения логики.</CardDescription>
+          <CardDescription>Эти данные автоматически добавляются к запросу.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
           <CompactStat label="Выборка" value={activeRows ? formatNumber(activeRows) : "—"} detail={lastPayload ? payloadTitle(lastPayload, templates) : "Нет активного расчета"} icon={TableProperties} />
@@ -1722,44 +2348,39 @@ function AssistantTab({
           <CompactStat label="Качество" value={formatNumber(warningsCount)} detail="Предупреждения активной выборки" icon={ShieldAlert} />
         </CardContent>
       </Card>
+    </div>
+  );
+}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Bot size={18} />
-              ИИ-помощник
-            </CardTitle>
-            <Badge variant="muted">Визуал</Badge>
+function AssistantToolEvents({ items }: { items: AssistantToolCall[] }) {
+  return (
+    <div className="mt-3 grid gap-2">
+      {items.map((item, index) => {
+        const failed = item.status === "error";
+        return (
+          <div key={`${item.name ?? "tool"}-${index}`} className="grid gap-1 rounded-md border bg-background px-2 py-1.5 text-xs">
+            <div className="flex items-center gap-2 font-medium">
+              {failed ? <AlertTriangle className="size-3.5 text-destructive" /> : <Database className="size-3.5 text-primary" />}
+              <span>{item.name || "Инструмент"}</span>
+              <Badge variant={failed ? "destructive" : "success"}>{failed ? "Ошибка" : "Выполнено"}</Badge>
+            </div>
+            {item.summary ? <div className="text-muted-foreground">{item.summary}</div> : null}
           </div>
-          <CardDescription>Функции ИИ не подключены: здесь нет сетевого запроса, изменения параметров или генерации ответа.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4">
-          <div className="rounded-md border bg-muted/35 p-3 text-sm">
-            <div className="text-xs text-muted-foreground">Пользовательский запрос</div>
-            <div className="mt-2">Покажи СКК по транспортным мероприятиям за 2025 год</div>
-          </div>
-          <div className="rounded-md border bg-background p-3 text-sm">
-            <div className="font-medium">Предлагаемые параметры</div>
-            <ul className="mt-2 grid gap-1 text-muted-foreground">
-              <li>Шаблон: СКК</li>
-              <li>Период: 01.01.2025 — 31.12.2025</li>
-              <li>Показатели: лимиты, БО, касса, соглашения, контракты</li>
-            </ul>
-          </div>
-          <div className="grid gap-2">
-            <Button type="button" disabled>
-              <Sparkles size={16} />
-              Применить параметры
-            </Button>
-            <Button type="button" variant="outline" disabled>
-              <MessageSquareText size={16} />
-              Объяснить результат
-            </Button>
-          </div>
-          <Input disabled placeholder="ИИ-подсказки будут доступны после подключения сервиса" />
-        </CardContent>
-      </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function AssistantActions({ items }: { items: AssistantAction[] }) {
+  return (
+    <div className="mt-3 grid gap-2">
+      {items.map((item, index) => (
+        <div key={`${item.type ?? "action"}-${index}`} className="flex items-start gap-2 rounded-md border bg-primary/5 px-2 py-1.5 text-xs">
+          <CheckCircle2 className="mt-0.5 size-3.5 text-primary" />
+          <span>{item.label || "Действие выполнено."}</span>
+        </div>
+      ))}
     </div>
   );
 }
